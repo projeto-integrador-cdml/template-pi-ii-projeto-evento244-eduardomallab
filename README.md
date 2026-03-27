@@ -17,11 +17,11 @@ Este repositório é o ponto de partida para os grupos da disciplina **Projeto I
 
 ## Informações obrigatórias a preencher
 
-- **Título do Projeto:**  
-- **Integrantes do Grupo:**  
-- **Problema que será resolvido:**  
-- **Fonte dos dados (link ou descrição):**  
-- **Etapa atual do projeto:** (ex: coleta, EDA, modelagem, etc.)
+- **Título do Projeto:** Dashboard de Evento da 244 
+- **Integrantes do Grupo:**  Eduardo Mallab e Hugo Galvão
+- **Problema que será resolvido:** Saber fazer um evento com segurança. 
+- **Fonte dos dados (link ou descrição):** Sympla evento própio
+- **Etapa atual do projeto:** (ex: coleta, EDA, modelagem, etc.) Criar um Datawarehouse e Datalake
 
 ---
 
