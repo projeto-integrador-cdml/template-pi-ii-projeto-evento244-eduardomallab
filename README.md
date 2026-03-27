@@ -27,9 +27,9 @@ Este repositório é o ponto de partida para os grupos da disciplina **Projeto I
 
 ## Etapas do Projeto
 
-- [ ] Definição do problema  
-- [ ] Obtenção e coleta dos dados  
-- [ ] Tratamento e limpeza  
+- [ x] Definição do problema  
+- [x ] Obtenção e coleta dos dados  
+- [ x] Tratamento e limpeza  
 - [ ] Análise exploratória  
 - [ ] Modelagem  
 - [ ] Comunicação de resultados
@@ -39,8 +39,8 @@ Este repositório é o ponto de partida para os grupos da disciplina **Projeto I
 ## Checklist inicial
 
 - [ ] Estrutura mínima criada (src/, notebooks/, data/, docs/)  
-- [ ] README.md preenchido  
-- [ ] Professor adicionado como colaborador: `@Professor-Weslley`  
+- [x ] README.md preenchido  
+- [x ] Professor adicionado como colaborador: `@Professor-Weslley`  
 - [ ] Primeiro commit realizado com as pastas organizadas
 
 ---
