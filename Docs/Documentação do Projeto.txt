@@ -1,0 +1,50 @@
+DOCUMENTAÇÃO DO PROJETO
+Modelo de Inteligência de Eventos (MIE)
+
+1. VISÃO GERAL
+Este projeto foi desenvolvido a partir da necessidade de melhorar o planejamento e a gestão de eventos culturais independentes. A experiência da 244Productions evidenciou dificuldades na tomada de decisão devido à ausência de dados estruturados, especialmente em relação a público, investimento e marketing.
+
+O MIE surge como uma solução orientada por dados, com o objetivo de reduzir incertezas e aumentar a eficiência operacional.
+
+2. OBJETIVO
+Desenvolver um sistema de Business Intelligence capaz de:
+- Apoiar decisões estratégicas
+- Melhorar a previsão de público
+- Otimizar o uso de recursos
+- Aumentar a rentabilidade dos eventos
+
+3. PROBLEMA
+A produção de eventos independentes enfrenta desafios como:
+- Falta de dados estruturados
+- Dificuldade em entender o público
+- Marketing pouco eficiente
+- Decisões baseadas em tentativa e erro
+
+4. SOLUÇÃO PROPOSTA
+O MIE integra:
+- Engenharia de dados
+- Business Intelligence
+- Machine Learning
+
+O objetivo é transformar dados em insights e previsões para orientar decisões.
+
+5. ARQUITETURA
+Fluxo de dados:
+1. Coleta de dados (Sympla e outras fontes)
+2. Processamento via ETL (Pentaho)
+3. Armazenamento em Data Lake e Data Warehouse
+4. Consumo via Power BI e modelos de Machine Learning
+
+Arquitetura Medallion:
+- Bronze: dados brutos
+- Silver: dados tratados
+- Gold: dados prontos para análise
+
+6. ENGENHARIA DE DADOS
+O pipeline de dados realiza:
+- Extração
+- Limpeza e padronização
+- Transformação
+- Armazenamento
+
+Isso garante qualidade e confiabilidade das informações.
