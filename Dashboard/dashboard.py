@@ -253,3 +253,56 @@ with col_e:
 
 st.markdown("---")
 st.caption("Dashboard gerado com Streamlit + Plotly | Dados: PostgreSQL DW")
+
+# ─── LINHA 4: ANÁLISE DE MERCADO ─────────────────────────────────────────────
+st.markdown("---")
+st.header("📊 Análise de Mercado — Funk/Trap em Brasília")
+
+@st.cache_data(ttl=300)
+def load_mercado():
+    conn = get_connection()
+    query = "SELECT * FROM dw.eventos_mercado"
+    return pd.read_sql(query, conn)
+
+df_mercado = load_mercado()
+df_mercado["data"] = pd.to_datetime(df_mercado["data"], errors="coerce")
+df_mercado["ano"] = df_mercado["data"].dt.year
+df_mercado["mes"] = df_mercado["data"].dt.month
+
+col_m1, col_m2, col_m3 = st.columns(3)
+col_m1.metric("Total de eventos", len(df_mercado))
+col_m2.metric("Eventos gratuitos", len(df_mercado[df_mercado["gratuito"] == "Sim"]))
+col_m3.metric("Regiões cobertas", df_mercado["bairro"].nunique())
+
+st.markdown("---")
+col_f, col_g = st.columns(2)
+
+with col_f:
+    st.subheader("📍 Eventos por região do DF")
+    por_bairro = df_mercado[df_mercado["bairro"].notna() & (df_mercado["bairro"] != "")]\
+        .groupby("bairro").size().reset_index(name="quantidade")\
+        .sort_values("quantidade", ascending=False).head(15)
+    fig_mb = px.bar(por_bairro, x="quantidade", y="bairro", orientation="h",
+                    color="quantidade", color_continuous_scale="Blues")
+    fig_mb.update_layout(yaxis=dict(autorange="reversed"),
+                         coloraxis_showscale=False, height=400)
+    st.plotly_chart(fig_mb, use_container_width=True)
+
+with col_g:
+    st.subheader("🎵 Eventos por gênero")
+    por_genero = df_mercado["genero"].value_counts().reset_index()
+    por_genero.columns = ["genero", "quantidade"]
+    fig_mg = px.pie(por_genero, names="genero", values="quantidade",
+                    hole=0.45, color_discrete_sequence=px.colors.sequential.Blues_r)
+    fig_mg.update_layout(height=400)
+    st.plotly_chart(fig_mg, use_container_width=True)
+
+st.markdown("---")
+col_h, col_i = st.columns(2)
+
+st.subheader("📅 Crescimento de eventos por ano")
+por_ano = df_mercado.groupby("ano").size().reset_index(name="quantidade")
+fig_ano = px.bar(por_ano, x="ano", y="quantidade",
+                 color="quantidade", color_continuous_scale="Blues")
+fig_ano.update_layout(coloraxis_showscale=False, height=350)
+st.plotly_chart(fig_ano, use_container_width=True)
