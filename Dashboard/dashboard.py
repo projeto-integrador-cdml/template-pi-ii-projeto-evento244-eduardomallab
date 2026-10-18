@@ -254,6 +254,57 @@ with col_e:
 st.markdown("---")
 st.caption("Dashboard gerado com Streamlit + Plotly | Dados: PostgreSQL DW")
 
+# ─── LINHA 5: ANÁLISE DE MERCADO — OUTROS GÊNEROS ────────────────────────────
+st.markdown("---")
+st.header("🎶 Análise de Mercado — Pagode, Sertanejo e Rock em Brasília")
+
+@st.cache_data(ttl=300)
+def load_outros_generos():
+    conn = get_connection()
+    return pd.read_sql("SELECT * FROM dw.eventos_outros_generos", conn)
+
+df_outros = load_outros_generos()
+df_outros["data"] = pd.to_datetime(df_outros["data"], errors="coerce")
+df_outros["ano"] = df_outros["data"].dt.year
+df_outros["mes"] = df_outros["data"].dt.month
+
+col_o1, col_o2, col_o3 = st.columns(3)
+col_o1.metric("Total de eventos", len(df_outros))
+col_o2.metric("Eventos gratuitos", len(df_outros[df_outros["gratuito"] == "Sim"]))
+col_o3.metric("Gêneros coletados", df_outros["genero"].nunique())
+
+st.markdown("---")
+col_p, col_q = st.columns(2)
+
+with col_p:
+    st.subheader("🎵 Distribuição por gênero")
+    por_genero = df_outros["genero"].value_counts().reset_index()
+    por_genero.columns = ["genero", "quantidade"]
+    fig_og = px.pie(por_genero, names="genero", values="quantidade",
+                    hole=0.45, color_discrete_sequence=["#378ADD", "#D4537E", "#F5A623"])
+    fig_og.update_layout(height=350)
+    st.plotly_chart(fig_og, use_container_width=True)
+
+with col_q:
+    st.subheader("📅 Eventos por mês")
+    por_mes = df_outros.groupby(["ano", "mes"]).size().reset_index(name="quantidade")
+    por_mes["periodo"] = por_mes["ano"].astype(str) + "-" + por_mes["mes"].astype(str).str.zfill(2)
+    fig_mes = px.bar(por_mes, x="periodo", y="quantidade",
+                     color="quantidade", color_continuous_scale="Blues",
+                     labels={"periodo": "Mês", "quantidade": "Eventos"})
+    fig_mes.update_layout(coloraxis_showscale=False, height=350)
+    st.plotly_chart(fig_mes, use_container_width=True)
+
+st.subheader("📍 Eventos por local")
+por_local = df_outros[df_outros["local"].notna() & (df_outros["local"] != "")]\
+    .groupby("local").size().reset_index(name="quantidade")\
+    .sort_values("quantidade", ascending=False).head(15)
+fig_local = px.bar(por_local, x="quantidade", y="local", orientation="h",
+                   color="quantidade", color_continuous_scale="Blues")
+fig_local.update_layout(yaxis=dict(autorange="reversed"),
+                        coloraxis_showscale=False, height=450)
+st.plotly_chart(fig_local, use_container_width=True)
+
 # ─── LINHA 4: ANÁLISE DE MERCADO ─────────────────────────────────────────────
 st.markdown("---")
 st.header("📊 Análise de Mercado — Funk/Trap em Brasília")
