@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+from modelo_kmeans import segmentar
 
 load_dotenv()
 
@@ -125,8 +126,17 @@ with st.spinner("Carregando dados do banco..."):
 
 df = processar(df_raw)
 
-if "bairro" not in df.columns:
+CACHE_BAIRROS = "cache_bairros.csv"
+
+if os.path.exists(CACHE_BAIRROS):
+    cache = pd.read_csv(CACHE_BAIRROS)
+    mapa = dict(zip(cache["cep"].astype(str), cache["bairro"]))
+    df["bairro"] = df["cep"].astype(str).map(mapa).fillna("Não identificado")
+else:
     df = enriquecer_bairros(df)
+    cache_df = df[["cep", "bairro"]].drop_duplicates()
+    cache_df.to_csv(CACHE_BAIRROS, index=False)
+
 
 # header
 st.title("🎵 Dashboard do Evento")
@@ -305,6 +315,41 @@ fig_local.update_layout(yaxis=dict(autorange="reversed"),
                         coloraxis_showscale=False, height=450)
 st.plotly_chart(fig_local, use_container_width=True)
 
+# ─── LINHA 6: IA — CLUSTERIZAÇÃO DE PERFIS ───────────────────────────────────
+st.markdown("---")
+st.header("🤖 IA — Segmentação de Perfis de Público (K-Means)")
+st.markdown("Modelo de machine learning que agrupa os inscritos em perfis automaticamente com base em idade, valor pago e método de pagamento.")
+
+df_clusters, resumo = segmentar(df)
+
+col_k1, col_k2 = st.columns(2)
+
+with col_k1:
+    st.subheader("👥 Distribuição dos perfis")
+    fig_cl = px.pie(
+        resumo, names="perfil", values="quantidade",
+        hole=0.45,
+        color_discrete_sequence=["#378ADD", "#D4537E", "#F5A623", "#27AE60"]
+    )
+    fig_cl.update_layout(height=350)
+    st.plotly_chart(fig_cl, use_container_width=True)
+
+with col_k2:
+    st.subheader("📊 Idade vs Valor pago por perfil")
+    fig_sc = px.scatter(
+        df_clusters, x="idade", y="valor", color="perfil",
+        color_discrete_sequence=["#378ADD", "#D4537E", "#F5A623", "#27AE60"],
+        labels={"idade": "Idade", "valor": "Valor (R$)", "perfil": "Perfil"},
+        opacity=0.7,
+    )
+    fig_sc.update_layout(height=350)
+    st.plotly_chart(fig_sc, use_container_width=True)
+
+st.subheader("📋 Características de cada perfil")
+tabela = resumo[["perfil", "quantidade", "idade_media", "valor_medio", "genero_predominante", "metodo_top", "bairro_top"]].copy()
+tabela.columns = ["Perfil", "Inscritos", "Idade média", "Valor médio (R$)", "Gênero predominante", "Método de pagamento", "Bairro principal"]
+st.dataframe(tabela, use_container_width=True, hide_index=True)
+
 # ─── LINHA 4: ANÁLISE DE MERCADO ─────────────────────────────────────────────
 st.markdown("---")
 st.header("📊 Análise de Mercado — Funk/Trap em Brasília")
@@ -351,9 +396,81 @@ with col_g:
 st.markdown("---")
 col_h, col_i = st.columns(2)
 
-st.subheader("📅 Crescimento de eventos por ano")
+st.subheader("📅 Dados de eventos coletados por ano")
 por_ano = df_mercado.groupby("ano").size().reset_index(name="quantidade")
 fig_ano = px.bar(por_ano, x="ano", y="quantidade",
                  color="quantidade", color_continuous_scale="Blues")
 fig_ano.update_layout(coloraxis_showscale=False, height=350)
 st.plotly_chart(fig_ano, use_container_width=True)
+
+st.markdown("---")
+st.subheader("🗺️ Mapa de Oportunidade: Perfis × Gêneros do Mercado")
+st.markdown("Score de afinidade entre cada perfil do público e os gêneros musicais disponíveis no mercado — quanto maior, mais eventos existem nos bairros onde esse perfil mora.")
+
+# Montar base de eventos
+df_mercado_full = pd.concat([
+    df_mercado.assign(dataset="Funk/Trap"),
+    df_outros.assign(dataset="Pagode/Sertanejo/Rock")
+], ignore_index=True)
+
+# Normalizar bairro nos eventos (manter só os reconhecidos)
+REGIOES_DF = [
+    "Asa Norte", "Asa Sul", "Lago Sul", "Lago Norte", "Ceilândia",
+    "Taguatinga", "Samambaia", "Gama", "Planaltina", "Sobradinho",
+    "Santa Maria", "Guará", "Cruzeiro", "Noroeste", "Sudoeste",
+    "Águas Claras", "Park Way",
+]
+eventos_com_bairro = df_mercado_full[
+    df_mercado_full["bairro"].isin(REGIOES_DF)
+][["genero", "bairro"]]
+
+# Eventos por bairro × gênero
+eventos_pivot = eventos_com_bairro.groupby(["bairro", "genero"]).size().reset_index(name="n_eventos")
+
+# Inscritos com perfil e bairro identificado
+df_com_bairro = df_clusters[
+    (df_clusters["bairro"] != "Não identificado") &
+    (df_clusters["bairro"].isin(REGIOES_DF))
+][["perfil", "bairro"]]
+
+# Inscritos por perfil × bairro
+inscritos_pivot = df_com_bairro.groupby(["perfil", "bairro"]).size().reset_index(name="n_inscritos")
+
+# Cruzamento: para cada perfil, somar eventos disponíveis nos bairros onde mora, por gênero
+cruzamento = inscritos_pivot.merge(eventos_pivot, on="bairro", how="inner")
+cruzamento["score"] = cruzamento["n_inscritos"] * cruzamento["n_eventos"]
+
+heatmap_data = cruzamento.groupby(["perfil", "genero"])["score"].sum().reset_index()
+
+# Filtrar top gêneros para não poluir
+top_generos = (
+    df_mercado_full["genero"].value_counts().head(6).index.tolist()
+)
+heatmap_data = heatmap_data[heatmap_data["genero"].isin(top_generos)]
+
+if not heatmap_data.empty:
+    pivot = heatmap_data.pivot(index="perfil", columns="genero", values="score").fillna(0)
+    # Normalizar cada linha para % (0–100)
+    pivot_pct = pivot.div(pivot.sum(axis=1), axis=0).mul(100).round(1)
+
+    import plotly.graph_objects as go
+    fig_hm = go.Figure(data=go.Heatmap(
+        z=pivot_pct.values,
+        x=pivot_pct.columns.tolist(),
+        y=pivot_pct.index.tolist(),
+        colorscale="Blues",
+        text=pivot_pct.values.round(1),
+        texttemplate="%{text}%",
+        showscale=True,
+        colorbar=dict(title="Afinidade (%)"),
+    ))
+    fig_hm.update_layout(
+        height=350,
+        xaxis_title="Gênero musical no mercado",
+        yaxis_title="Perfil do público",
+        margin=dict(l=10, r=10, t=30, b=10),
+    )
+    st.plotly_chart(fig_hm, use_container_width=True)
+    st.caption("Score = nº de inscritos do perfil no bairro × nº de eventos do gênero no mesmo bairro, normalizado por perfil. Fonte: Sympla Brasília (2025/2026)")
+else:
+    st.info("Dados insuficientes para gerar o mapa de oportunidade (poucos bairros em comum).")
