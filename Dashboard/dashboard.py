@@ -1,16 +1,29 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import psycopg2
+try:
+    import psycopg2
+except Exception:
+    psycopg2 = None
 import requests
 import time
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 from modelo_kmeans import segmentar
+from modelo_previsao import ModeloOportunidade, ModeloPublico, preparar_mercado
 
 load_dotenv()
+
+
+def achar_arquivo(nome):
+    """Procura o arquivo na pasta do dashboard e na pasta de cima (raiz do repositório)."""
+    for pasta in [os.path.dirname(os.path.abspath(__file__)), os.getcwd(), os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")]:
+        caminho = os.path.join(pasta, nome)
+        if os.path.exists(caminho):
+            return caminho
+    return None
 
 st.set_page_config(
     page_title="Dashboard do Evento",
@@ -20,6 +33,8 @@ st.set_page_config(
 
 @st.cache_resource
 def get_connection():
+    if psycopg2 is None:
+        raise RuntimeError('psycopg2 indisponivel')
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
@@ -47,6 +62,31 @@ def load_data():
         JOIN dw.dim_email     e ON f.id_email      = e.id_email
     """
     return pd.read_sql(query, conn)
+
+@st.cache_data
+def load_data_csv():
+    """
+    Plano B quando o PostgreSQL não está ligado: lê a camada gold exportada em CSV.
+    Cada linha do arquivo vem inteira entre aspas e separada por ';', por isso a leitura manual.
+    """
+    caminho = achar_arquivo("camadagoldtexto.csv")
+    with open(caminho, encoding="utf-8") as f:
+        linhas = [l.strip().strip('"') for l in f if l.strip()]
+    cab = linhas[0].split(";")
+    df_csv = pd.DataFrame([l.split(";") for l in linhas[1:]], columns=cab)
+    df_csv = df_csv.apply(lambda c: c.str.strip())
+    valor = (df_csv["Valor"].str.replace("R$", "", regex=False).str.replace(".", "", regex=False)
+             .str.replace(",", ".", regex=False).str.strip())
+    return pd.DataFrame({
+        "id_fato": range(1, len(df_csv) + 1),
+        "data_compra": df_csv["Data_Compra"],
+        "valor": pd.to_numeric(valor, errors="coerce"),
+        "genero": df_csv["Genero"],
+        "data_de_nascimento": df_csv["Data_de_Nascimento"],
+        "cep": df_csv["CEP"],
+        "metodo_de_pagamento": df_csv["Metodo_de_pagamento"],
+        "email": df_csv["Email"],
+    })
 
 @st.cache_data(show_spinner=False)
 def cep_para_bairro(cep: str) -> str:
@@ -94,16 +134,22 @@ def processar(df):
     return df
 
 # ── Carrega dados ────────────────────────────────────────────────────────────
+USANDO_CSV = False
 with st.spinner("Carregando dados do banco..."):
     try:
         df_raw = load_data()
     except Exception as e:
-        st.error(f"Erro ao conectar no banco: {e}")
-        st.stop()
+        # sem banco, usa os CSVs do repositório pra o dashboard continuar funcionando
+        if achar_arquivo("camadagoldtexto.csv"):
+            df_raw = load_data_csv()
+            USANDO_CSV = True
+        else:
+            st.error(f"Erro ao conectar no banco: {e}")
+            st.stop()
 
 df = processar(df_raw)
 
-CACHE_BAIRROS = "cache_bairros.csv"
+CACHE_BAIRROS = achar_arquivo("cache_bairros.csv") or "cache_bairros.csv"
 if os.path.exists(CACHE_BAIRROS):
     cache = pd.read_csv(CACHE_BAIRROS)
     mapa = dict(zip(cache["cep"].astype(str), cache["bairro"]))
@@ -115,11 +161,15 @@ else:
 
 @st.cache_data(ttl=300)
 def load_mercado():
+    if USANDO_CSV:
+        return pd.read_csv(achar_arquivo("eventos_funk_trap_brasilia.csv"))
     conn = get_connection()
     return pd.read_sql("SELECT * FROM dw.eventos_mercado", conn)
 
 @st.cache_data(ttl=300)
 def load_outros_generos():
+    if USANDO_CSV:
+        return pd.read_csv(achar_arquivo("eventos_outros_generos_brasilia.csv"))
     conn = get_connection()
     return pd.read_sql("SELECT * FROM dw.eventos_outros_generos", conn)
 
@@ -138,8 +188,8 @@ df_clusters, resumo = segmentar(df)
 # ── Carregar dados do bar ────────────────────────────────────────────────────
 @st.cache_data
 def load_bar():
-    path = "custo_bar_evento.csv"
-    if os.path.exists(path):
+    path = achar_arquivo("custo_bar_evento.csv")
+    if path:
         return pd.read_csv(path)
     return pd.DataFrame()
 
@@ -476,11 +526,100 @@ st.markdown("---")
 st.header("🧮 Simulador de Evento")
 st.caption("Informe os parâmetros do seu evento e veja se o orçamento fecha com base nos dados reais do público.")
 
+if USANDO_CSV:
+    st.caption("ℹ️ Banco PostgreSQL indisponível: dados carregados dos CSVs do repositório (camada gold e eventos de mercado).")
+
+# ── Modelos de previsão (treinados com os dados carregados acima) ────────────
+eventos_mercado = preparar_mercado(df_mercado, df_outros)
+modelo_oport = ModeloOportunidade().treinar(eventos_mercado)
+modelo_publico = ModeloPublico().treinar(df_clusters)
+
+# Antecedência mínima: o público compra em média X dias antes, então a data
+# do evento precisa dar tempo de divulgar (mesma regra da dica de timing)
+dias_compra = float((resumo["dias_antes_media"] * resumo["quantidade"]).sum() / resumo["quantidade"].sum())
+antecedencia_min = max(int(dias_compra) + 7, 14)
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8.1 — PREVISÃO DE DATA, GÊNERO E LOCAL
+# ════════════════════════════════════════════════════════════════════════════
+st.subheader("🔮 Previsão de data, gênero e local")
+st.caption("O modelo olha os eventos do mercado de Brasília e dá nota para cada combinação de data, gênero e local: "
+           "quanto o gênero aparece no mercado, em que dia da semana ele costuma acontecer, quais casas recebem esse "
+           "gênero e quantos eventos já estão marcados no mesmo dia (concorrência).")
+
+hoje_ts = pd.Timestamp(datetime.today().date())
+col_p1, col_p2 = st.columns([1, 2])
+with col_p1:
+    periodo = st.date_input(
+        "📅 Período em que o evento pode acontecer",
+        value=(hoje_ts.date(), (hoje_ts + pd.Timedelta(days=60)).date()),
+        key="periodo_previsao",
+    )
+with col_p2:
+    generos_escolhidos = st.multiselect("🎵 Gêneros que vocês topam fazer", modelo_oport.generos,
+                                        default=modelo_oport.generos, key="generos_previsao")
+
+if isinstance(periodo, (list, tuple)) and len(periodo) == 2 and generos_escolhidos:
+    data_ini, data_fim = periodo
+    data_minima = hoje_ts + pd.Timedelta(days=antecedencia_min)
+    st.caption(f"Datas antes de **{data_minima:%d/%m/%Y}** ficam de fora: o público compra em média "
+               f"{dias_compra:.0f} dias antes, então precisa de pelo menos {antecedencia_min} dias pra divulgar. "
+               f"A concorrência só conta eventos já coletados (agenda até {eventos_mercado['data'].max():%d/%m/%Y}).")
+
+    ranking = modelo_oport.recomendar(data_ini, data_fim, generos=generos_escolhidos,
+                                      data_minima=data_minima, top=len(generos_escolhidos), um_por_genero=True)
+    if ranking.empty:
+        st.warning("Nenhuma combinação possível nesse período. Aumente o período ou escolha mais gêneros.")
+        recomendacao = None
+    else:
+        melhor = ranking.iloc[0]
+        st.success(f"🏆 **Recomendação:** {melhor['genero']} no **{melhor['local']}**, "
+                   f"{melhor['dia_semana'].lower()} **{melhor['data']:%d/%m/%Y}**  \n{melhor['motivo']}")
+
+        col_r1, col_r2 = st.columns([1, 1])
+        with col_r1:
+            st.markdown("**Melhor combinação de cada gênero**")
+            fig_rank = px.bar(ranking.sort_values("nota"), x="nota", y="genero", orientation="h",
+                              text=ranking.sort_values("nota")["nota"].map(lambda v: f"{v:.0f}"),
+                              color="nota", color_continuous_scale="Blues",
+                              hover_data={"local": True, "dia_semana": True},
+                              labels={"nota": "Nota (0–100)", "genero": ""})
+            fig_rank.update_layout(coloraxis_showscale=False, height=280, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig_rank, use_container_width=True)
+        with col_r2:
+            st.markdown("**Em que dia da semana cada gênero acontece**")
+            dias = modelo_oport.dias_por_genero()
+            dias = dias[dias["genero"].isin(generos_escolhidos)]
+            pivot_dias = dias.pivot(index="genero", columns="dia", values="probabilidade")[
+                ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]]
+            fig_dias = go.Figure(data=go.Heatmap(z=(pivot_dias.values * 100).round(0), x=pivot_dias.columns,
+                                                 y=pivot_dias.index, colorscale="Blues",
+                                                 texttemplate="%{z:.0f}%", showscale=False))
+            fig_dias.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig_dias, use_container_width=True)
+
+        genero_sim = st.selectbox("Ver os melhores locais (e a melhor data de cada um) para o gênero", ranking["genero"].tolist(),
+                                  key="genero_detalhe")
+        opcoes = modelo_oport.recomendar(data_ini, data_fim, generos=[genero_sim], data_minima=data_minima, top=5)
+        tabela_op = opcoes[["data", "dia_semana", "local", "regiao_local", "nota", "motivo"]].copy()
+        tabela_op["data"] = tabela_op["data"].dt.strftime("%d/%m/%Y")
+        tabela_op.columns = ["Data", "Dia", "Local", "Região do local", "Nota", "Por quê"]
+        st.dataframe(tabela_op, use_container_width=True, hide_index=True)
+        recomendacao = opcoes.iloc[0] if not opcoes.empty else None
+else:
+    st.info("Escolha a data inicial e a final do período e pelo menos um gênero.")
+    recomendacao = None
+
+st.markdown("#### 💵 Parâmetros do evento")
+
 # ── Inputs principais ────────────────────────────────────────────────────────
 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
 orcamento = col_s1.number_input("💰 Orçamento total (R$)", min_value=0, value=5000, step=500)
 capacidade = col_s2.number_input("👥 Capacidade máxima", min_value=1, value=200, step=10)
-local_sim = col_s3.selectbox("📍 Local do evento", ["Plano Piloto", "Entorno"])
+# se o local recomendado tem região conhecida, já começa selecionado nela
+regiao_rec = recomendacao["regiao_local"] if recomendacao is not None else "Não informado"
+local_sim = col_s3.selectbox("📍 Local do evento", ["Plano Piloto", "Entorno"],
+                             index=1 if regiao_rec == "Entorno" else 0)
 preco_ingresso = col_s4.number_input("🎟️ Preço do ingresso (R$)", min_value=0, value=20, step=5)
 
 # ── Montador de cardápio ──────────────────────────────────────────────────────
@@ -605,6 +744,12 @@ if st.button("▶ Simular", use_container_width=False):
         if len(df_local) > 10:
             taxa_pagantes = (df_local["valor"] > 0).sum() / len(df_local) if "valor" in df_local.columns else taxa_pagantes
 
+    # Previsão do perfil de público (modelo_previsao.ModeloPublico): reaproveita
+    # o público real do Evento 244 ajustado pelo preço e pela região do novo evento
+    previsao = modelo_publico.prever(preco_ingresso, local_sim, capacidade)
+    if preco_ingresso > 0:
+        taxa_pagantes = previsao["pct_pagantes"]
+
     # Público e pagantes esperados
     publico_esperado = int(capacidade * 0.65)
     pagantes_esperados = int(publico_esperado * taxa_pagantes)
@@ -710,6 +855,59 @@ if st.button("▶ Simular", use_container_width=False):
 
     if ponto_equilibrio and preco_ingresso > 0:
         st.caption(f"Ponto de equilíbrio (só ingresso): {ponto_equilibrio} pagantes × R$ {preco_ingresso} = R$ {orcamento:,.0f}".replace(",", "."))
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 8.2 — PREVISÃO DO PERFIL DE PÚBLICO
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("👥 Previsão do perfil de público")
+    if recomendacao is not None:
+        st.caption(f"Evento simulado: {recomendacao['genero']} · {recomendacao['local']} · "
+                   f"{recomendacao['data']:%d/%m/%Y} · {local_sim} · ingresso R$ {preco_ingresso}")
+    st.caption("Parte do público real do Evento 244 e ajusta pelo que muda: quem tem perfil de pagante pesa mais "
+               "quando o ingresso é pago (Regressão Logística) e quem mora na mesma região do evento pesa mais.")
+
+    col_pp1, col_pp2, col_pp3, col_pp4 = st.columns(4)
+    col_pp1.metric("🎂 Idade média prevista", f"{previsao['idade_media']:.0f} anos")
+    col_pp2.metric("🎟️ Pagantes previstos", f"{previsao['pct_pagantes']:.0%}" if preco_ingresso > 0 else "Gratuito")
+    col_pp3.metric("📅 Compra em média", f"{previsao['dias_antes_medio']:.0f} dias antes")
+    col_pp4.metric("⏰ Compra na última semana", f"{previsao['pct_ultima_semana']:.0%}")
+
+    col_g1, col_g2, col_g3 = st.columns(3)
+    with col_g1:
+        fig_pf = px.bar(previsao["faixa_etaria"], x="faixa_etaria", y="percentual",
+                        color="percentual", color_continuous_scale="Blues",
+                        labels={"faixa_etaria": "Faixa etária", "percentual": "% do público"})
+        fig_pf.update_layout(coloraxis_showscale=False, height=260, margin=dict(l=0, r=0, t=30, b=0),
+                             title="Faixa etária")
+        st.plotly_chart(fig_pf, use_container_width=True)
+    with col_g2:
+        fig_pg = px.pie(previsao["genero"], names="genero", values="percentual", hole=0.45,
+                        color_discrete_sequence=["#378ADD", "#D4537E", "#888780"])
+        fig_pg.update_layout(height=260, margin=dict(l=0, r=0, t=30, b=0), title="Gênero")
+        st.plotly_chart(fig_pg, use_container_width=True)
+    with col_g3:
+        fig_pr = px.pie(previsao["regiao"], names="regiao", values="percentual", hole=0.45,
+                        color_discrete_sequence=["#378ADD", "#9FE1CB", "#888780"])
+        fig_pr.update_layout(height=260, margin=dict(l=0, r=0, t=30, b=0), title="Onde mora")
+        st.plotly_chart(fig_pr, use_container_width=True)
+
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        st.markdown("**Perfis (K-Means) esperados no evento**")
+        st.dataframe(previsao["perfis"].rename(columns={"perfil": "Perfil", "percentual": "% do público"}),
+                     use_container_width=True, hide_index=True)
+    with col_t2:
+        st.markdown("**Bairros que mais devem aparecer**")
+        st.dataframe(previsao["bairros"].rename(columns={"bairro": "Bairro", "percentual": "% do público"}),
+                     use_container_width=True, hide_index=True)
+
+    with st.expander("🔍 Como o modelo de público funciona"):
+        st.markdown(f"A Regressão Logística estima a chance de cada pessoa do Evento 244 ser pagante. "
+                    f"AUC na validação cruzada: **{modelo_publico.auc:.2f}** (0,5 = chute, 1,0 = perfeito).")
+        st.dataframe(modelo_publico.coeficientes(), use_container_width=True, hide_index=True)
+        st.caption("Coeficiente positivo = aumenta a chance de pagar (variáveis padronizadas). "
+                   "Ingressos acima de R$ 35 são extrapolação: o Evento 244 só teve lotes de R$ 15 a R$ 35.")
 
 st.markdown("---")
 st.caption("Dashboard gerado com Streamlit + Plotly | Dados: PostgreSQL DW")
